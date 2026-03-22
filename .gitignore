@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+obj/
+Debug/
+Release/
+x64/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Temporary files
+.tmp/
+.kilocode/
+.claude/
+
+# System files
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.obj
+*.o
+
+# Convert script (optional)
+convert.ps1
