@@ -179,17 +179,11 @@ struct EventBus::Impl {
 	}
 
 	bool publish(const std::string& topic, const zen_rttr::variant& msg) {
-		// 早期检查：线程池未初始化
-		if (!pool_) {
-			return false;
-		}
-		// 使用 .load() 保持内存序一致性
-		auto status = run_status_.load(std::memory_order_acquire);
-		if (status == status::kEnd || status == status::kPause) {
-			return false;
-		}
-		// 验证主题并缓存信号指针（合并两次加锁为一次，消除热路径上的重复查找）
+		// Bug#1 修复：将局部变量改名为 run_st，避免遮蔽成员枚举类型 status
+		// Bug#2 修复：早期 pool_ 检查放入 mtx_signals_ 锁内，消除与 start()/stop() 的 Data Race
+		// 验证主题并缓存信号指针，同时在锁内安全获取 pool_ 快照
 		SignalPtr sig;
+		ctpl::thread_pool* pool_snap = nullptr;
 		{
 			std::shared_lock<std::shared_mutex> lck_t(rwmtx_topics_);
 			auto tit = valid_topic_.find(topic);
@@ -197,9 +191,15 @@ struct EventBus::Impl {
 				return false;
 			}
 			std::shared_lock<std::shared_mutex> lck_s(mtx_signals_);
-			// 在锁内再次检查状态，与 stop() 互斥
-			status = run_status_.load(std::memory_order_acquire);
-			if (status == status::kEnd || status == status::kPause) {
+			// Bug#1 修复：局部变量改名 run_st，不再遮蔽枚举类型 status
+			// Bug#2 修复：在 mtx_signals_ 锁内检查状态和安全读取 pool_，与 stop() 互斥
+			auto run_st = run_status_.load(std::memory_order_acquire);
+			if (run_st == status::kEnd || run_st == status::kPause) {
+				return false;
+			}
+			// Bug#2 修复：pool_ 在锁保护下读取，消除 Data Race
+			pool_snap = pool_.get();
+			if (!pool_snap) {
 				return false;
 			}
 			auto sit = signals_.find(topic);
@@ -208,9 +208,9 @@ struct EventBus::Impl {
 			}
 			sig = sit->second;  // 持锁期间拷贝 shared_ptr，延长 Signal 生命周期
 		}
-		// 异步分发：lambda 不持有任何 Impl 成员引用
+		// 异步分发：使用锁内取得的 pool_snap，lambda 不持有任何 Impl 成员引用
 		// stop() 调用 disconnect_all_slots() 后，(*sig)(msg) 为空操作，无 use-after-free 风险
-		pool_->push([sig, msg](int) {
+		pool_snap->push([sig, msg](int) {
 			(*sig)(msg);
 		});
 		return true;
